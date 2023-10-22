@@ -5,10 +5,8 @@ from math import round
 from memory import memset_zero, memcpy
 from memory.buffer import Buffer
 from memory.unsafe import DTypePointer
-from python import Python
 from random import rand
-from read import BufReader, File
-from runtime.llcl import num_cores, Runtime
+from runtime.llcl import num_cores
 from sys import argv
 from tensor import Tensor, TensorShape, TensorSpec
 
@@ -250,6 +248,10 @@ struct FileBuf:
             raise Error("Offset is before the beginning of the FileBuf")
         return self.offset
 
+    fn pointer_to_offset(self,pos:Int) raises -> BufferPtrFloat32:
+        return self.data.offset(pos).bitcast[DType.float32]()
+
+
 
 fn wrap(token: PointerString) -> PointerString:
     if string_compare(token, str_to_ptr("\\n")) == 0:
@@ -398,54 +400,59 @@ struct TransformerWeights:
     fn __init__(
         inout self, config: Config, shared_weights: Int, inout buf: FileBuf
     ) raises:
-        fn load_weights(inout buf: FileBuf, *dims: Int) raises -> TensorF32:
+        var current_offset = buf.offset
+        
+        @parameter
+        fn load_weights(*dims: Int) raises -> TensorF32:
             # Ensure returned Tensor doesn't share a pointer with FileBuf
             let shape = TensorShape(dims)
-            let result_data = BufferPtrFloat32.alloc(shape.num_elements())
-            memcpy(
-                result_data,
-                buf.bitcast_offset_f32(shape.num_elements()),
-                shape.num_elements(),
-            )
+            #let result_data = BufferPtrFloat32.alloc(shape.num_elements())
+            
+            #memcpy(
+            #    result_data,
+            #    buf.bitcast_offset_f32(shape.num_elements()),
+            #    shape.num_elements(),
+            #)
+            
+            let result_data = buf.pointer_to_offset(current_offset)
+            current_offset+= sizeof[DType.float32]()*shape.num_elements()
             return TensorF32(result_data, shape)
 
-        self.token_embedding_table = load_weights(buf, config.vocab_size, config.dim)
-        self.rms_att_weight = load_weights(buf, config.n_layers, config.dim)
-        self.wq = load_weights(buf, config.n_layers, config.dim, config.dim)
-        self.wk = load_weights(buf, config.n_layers, config.kv_dim, config.dim)
-        self.wv = load_weights(buf, config.n_layers, config.kv_dim, config.dim)
-        self.wo = load_weights(buf, config.n_layers, config.dim, config.dim)
-        self.rms_ffn_weight = load_weights(buf, config.n_layers, config.dim)
-        self.w1 = load_weights(buf, config.n_layers, config.hidden_dim, config.dim)
-        self.w2 = load_weights(buf, config.n_layers, config.dim, config.hidden_dim)
-        self.w3 = load_weights(buf, config.n_layers, config.hidden_dim, config.dim)
-        self.rms_final_weight = load_weights(buf, config.dim)
+        self.token_embedding_table = load_weights(config.vocab_size, config.dim)
+        self.rms_att_weight = load_weights(config.n_layers, config.dim)
+        self.wq = load_weights(config.n_layers, config.dim, config.dim)
+        self.wk = load_weights(config.n_layers, config.kv_dim, config.dim)
+        self.wv = load_weights(config.n_layers, config.kv_dim, config.dim)
+        self.wo = load_weights(config.n_layers, config.dim, config.dim)
+        self.rms_ffn_weight = load_weights(config.n_layers, config.dim)
+        self.w1 = load_weights(config.n_layers, config.hidden_dim, config.dim)
+        self.w2 = load_weights(config.n_layers, config.dim, config.hidden_dim)
+        self.w3 = load_weights(config.n_layers, config.hidden_dim, config.dim)
+        self.rms_final_weight = load_weights(config.dim)
         # maybe need modifying for different model
         # config.head_size // 2 for stories and tinyllama-1.1
-        self.freq_cis_real = load_weights(buf, config.seq_len, config.head_size // 2)
-        self.freq_cis_imag = load_weights(buf, config.seq_len, config.head_size // 2)
+        self.freq_cis_real = load_weights(config.seq_len, config.head_size // 2)
+        self.freq_cis_imag = load_weights(config.seq_len, config.head_size // 2)
         if shared_weights:
             self.wcls = self.token_embedding_table
         else:
-            self.wcls = load_weights(buf, config.vocab_size, config.dim)
+            self.wcls = load_weights(config.vocab_size, config.dim)
+        buf.offset = current_offset
 
 
 fn read_file(file_name: String, inout buf: FileBuf) raises:
-    let _os = Python.import_module("os")
-    let ff_size = _os.path.getsize(file_name)
-    let cp_size = string.atol(ff_size.to_string())
-    let cp_buf: BufferPtrType = BufferPtrType.alloc(cp_size)
-    # set window buffer to read binary data from file
-    let f = File(file_name)
-    var reader = BufReader[4096](f ^)
-    var bytes_read = 1
-    var offset = 0
+    var fd = open(file_name, "r")
+    var data = fd.read()
+    fd.close()
 
-    while bytes_read > 0:
-        let buf = Buffer[4096, DType.uint8](cp_buf.offset(offset))
-        bytes_read = reader.read(buf)
-        offset += bytes_read
-    reader.do_nothing()  # keeps lifetimes working
+    let cp_buf = data._as_ptr().bitcast[DType.uint8]()
+    let cp_size = data._buffer.size
+
+    data._buffer.data = data._buffer.data.get_null().alloc(1)
+    data._buffer.size = 1
+    data._buffer.capacity = 1
+    
+    
     buf.data = cp_buf
     buf.size = cp_size
     buf.offset = 0
@@ -1001,3 +1008,13 @@ fn main() raises:
 
     let end = time_in_ms()
     print("\nachieved tok/s: ", (pos - 1) / (end - start) * 1000)
+    
+    time.sleep(2)
+    _ = fbuf^
+    _ = weights^
+    _ = state^
+    _ = config^
+    _ = tok^
+    #fbuf.data = tbuf.data.get_null().alloc(1)
+    #var b = tbuf.
+    
