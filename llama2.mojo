@@ -844,17 +844,16 @@ fn argmax(v: TensorF32) -> Int:
             max_p = v[i]
     return max_i
 
-
-fn sample(probabilities: TensorF32) -> Int:
+var pre_rand_for_samples:DTypePointer[DType.float32]=DTypePointer[DType.float32]()
+fn sample(probabilities: TensorF32,pos:Int) -> Int:
     let n = probabilities.dim(0)
     # Sample index from probabilities, they must sum to 1
     # get random value within (min, max) float32 range
-    let r = DTypePointer[DType.float32].alloc(1)
-    rand[DType.float32](r, 1)
+    let current_sample = pre_rand_for_samples.load(pos)
     var cdf: Float32 = 0.0
     for i in range(n):
         cdf += probabilities[i]
-        if r.load(0) < cdf:
+        if current_sample< cdf:
             return i
     return n - 1  # In case of rounding errors
 
@@ -1007,6 +1006,10 @@ fn main() raises:
     if steps <= 0 or steps > config.seq_len:
         steps = config.seq_len
 
+    #pre populate the random samples
+    pre_rand_for_samples = DTypePointer[DType.float32].alloc(steps)
+    rand[DType.float32](pre_rand_for_samples, steps)
+
     # Read in the tokenizer.bin file
     read_file(tokenizer, tbuf)
     var tok = Tokenizer(config.vocab_size, tbuf)
@@ -1051,7 +1054,7 @@ fn main() raises:
                 # Apply softmax to the logits to get the probabilities for the next token
                 softmax(state.logits)
                 # Sample from this distribution to get the next token
-                next_token = sample(state.logits)
+                next_token = sample(state.logits,pos)
 
             # Finish generating when EOS, BOS appear
             if next_token == 1 or next_token == 2:
