@@ -21,6 +21,7 @@ import time
 
 var workers = 0
 
+
 alias nelts = (4*simdwidthof[DType.float32]())
 
 alias PointerString = Pointer[UInt8]
@@ -561,45 +562,38 @@ fn batch_matmul[
     rows: Int,
     cols: Int,
 ):
+
+    alias y_tile = 4
     @parameter
     fn compute_row(i: Int):
-        var tmp = StaticTuple[n, SIMD[DType.float32, nelts]]()
+        var tmp = StaticTuple[n*y_tile, SIMD[DType.float32, nelts]]()
         @parameter
         fn init[k: Int]():
             tmp[k] = SIMD[DType.float32, nelts](0)
-        unroll[n, init]()
-        let row_offset = i * cols
+        unroll[n*y_tile, init]()
+        
 
         @parameter
         fn dot[_nelts: Int](j: Int):
-            if _nelts < nelts:  # take care of tail array elements with length <  nelts
-                let a = A.simd_load[_nelts](j)
 
-                @parameter
-                fn _multiply_tail[k: Int]():
-                    tmp[k][0] += (
-                        a * B[k].simd_load[_nelts](row_offset + j)
-                    ).reduce_add()
+            let a = A.simd_load[nelts](j)
+            @unroll
+            for mat in range(n):
+                @unroll
+                for more_rows in range(y_tile):
+                    tmp[mat*y_tile+more_rows] += a * B[mat].simd_load[nelts]((i*y_tile+more_rows) * cols + j)
 
-                unroll[n, _multiply_tail]()
-            else:
-                let a = A.simd_load[nelts](j)
-
-                @parameter
-                fn _multiply[k: Int]():
-                    tmp[k] += a * B[k].simd_load[nelts](row_offset + j)
-
-                unroll[n, _multiply]()
 
         vectorize[nelts, dot](cols)
 
-        @parameter
-        fn _reduce[k: Int]():
-            C[k].store(i, tmp[k].reduce_add())
+        @unroll
+        for mat in range(n):
+            @unroll
+            for more_rows in range(y_tile):
+                C[mat].store(i*y_tile+more_rows, tmp[y_tile*mat+more_rows].reduce_add())
 
-        unroll[n, _reduce]()
-
-    parallelize[compute_row](rows, workers)
+       
+    parallelize[compute_row](rows//y_tile, workers)
 
 
 @always_inline
