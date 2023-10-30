@@ -845,6 +845,7 @@ fn argmax(v: TensorF32) -> Int:
     return max_i
 
 var pre_rand_for_samples:DTypePointer[DType.float32]=DTypePointer[DType.float32]()
+@always_inline
 fn sample(probabilities: TensorF32,pos:Int) -> Int:
     let n = probabilities.dim(0)
     # Sample index from probabilities, they must sum to 1
